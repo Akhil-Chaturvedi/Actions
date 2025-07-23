@@ -1,0 +1,50 @@
+# .github/workflows/scrape.yml
+
+name: Run Octopart Scraper
+
+on:
+  # This allows you to run the workflow manually from the Actions tab on GitHub
+  workflow_dispatch:
+
+  # You can also schedule it to run automatically, e.g., once a week
+  # The cron syntax is a bit tricky: 'minute hour day(month) month day(week)'
+  # This example runs at 5:30 AM UTC every Monday
+  schedule:
+    - cron: '30 5 * * 1'
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest  # Use a standard Linux runner
+
+    steps:
+      # Step 1: Check out your repository code so the runner can access your script
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Python
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # Step 3: Install Google Chrome (required for Selenium/undetected-chromedriver)
+      - name: Install Google Chrome
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+
+      # Step 4: Install your Python script's dependencies
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      # Step 5: Run the actual scraper script
+      - name: Run the Octopart scraper
+        run: python get_octopart_products.py
+
+      # Step 6: Upload the output file as a "build artifact"
+      # This is how you get the final .txt file off the runner and back to you.
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: octopart-product-urls
+          path: octopart_product_urls.txt
