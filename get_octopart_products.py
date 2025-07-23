@@ -19,14 +19,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # --- Configuration ---
 SITEMAP_INDEX_URL = 'https://octopart.com/product-sitemap-index.xml'
 OUTPUT_FILE = 'octopart_product_urls.txt'
-# Number of concurrent browsers to run. 
-# 8 is a good starting point. Adjust based on your PC's performance.
 MAX_WORKERS = 8
 
-def fetch_page_with_uc(url, headless_mode=True):
+def fetch_and_parse_sitemap(url, headless_mode=True):
     """
-    Uses undetected_chromedriver to fetch page content.
-    Can run in either headless (invisible) or headful (visible) mode.
+    Worker function: Launches a browser, fetches a sitemap URL, waits for it to load,
+    parses the content, and returns a list of URLs.
     """
     options = uc.ChromeOptions()
     if headless_mode:
@@ -37,65 +35,57 @@ def fetch_page_with_uc(url, headless_mode=True):
         driver = uc.Chrome(options=options)
         driver.get(url)
         
-        # Wait up to 60 seconds for a <loc> tag to appear.
-        wait = WebDriverWait(driver, 60)
+        # --- MODIFIED: Increased timeout to 4 minutes (240 seconds) ---
+        wait = WebDriverWait(driver, 240)
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "loc")))
         
         page_content = driver.page_source
-        return page_content
 
-    except Exception:
-        # If any error occurs (timeout, etc.), it will fail gracefully for this one URL.
-        return None
-    finally:
-        if driver:
-            driver.quit()
-
-def parse_urls_from_sitemap_content(page_content):
-    """Parses page content to extract URLs from <loc> tags."""
-    if not page_content:
-        return []
-    try:
+        # Parse the content directly in the worker
+        if not page_content:
+            return []
         soup = BeautifulSoup(page_content, 'lxml')
         loc_tags = soup.find_all('loc')
         return [tag.text for tag in loc_tags]
-    except Exception:
+
+    except TimeoutException:
+        # --- ADDED: Better error logging ---
+        # This will now show up in the GitHub Actions log if a specific URL fails.
+        print(f"\n[WORKER TIMEOUT] Timed out waiting for content on: {url}")
         return []
+    except Exception as e:
+        print(f"\n[WORKER ERROR] An unexpected error occurred for {url}: {e}")
+        return []
+    finally:
+        if driver:
+            driver.quit()
 
 # --- Main execution block ---
 if __name__ == "__main__":
     start_time = time.time()
     
-    # --- Step 1: Fetch the main sitemap index (with a VISIBLE browser to be safe) ---
-    print("--- Step 1: Fetching main sitemap index (visible browser) ---")
-    index_page_content = fetch_page_with_uc(SITEMAP_INDEX_URL, headless_mode=False)
-    
-    if not index_page_content:
-        print("\nCRITICAL ERROR: Script failed to retrieve the main sitemap index.")
-        print("This could be a network issue or a change in the website's protection.")
-        exit()
-        
-    sub_sitemaps = parse_urls_from_sitemap_content(index_page_content)
+    # --- Step 1: Fetch the main sitemap index (with a VISIBLE browser) ---
+    print("--- Step 1: Fetching main sitemap index (visible browser in virtual display) ---")
+    # Using a list comprehension to get the result from the single call
+    sub_sitemaps = fetch_and_parse_sitemap(SITEMAP_INDEX_URL, headless_mode=False)
     
     if not sub_sitemaps:
-        print("Page was retrieved, but no sub-sitemap URLs (<loc> tags) were found.")
+        print("\nCRITICAL ERROR: Script failed to retrieve or parse the main sitemap index.")
         exit()
-
+        
     print(f"-> Success! Found {len(sub_sitemaps)} sub-sitemap URLs.")
     
     all_product_urls = set()
 
-    # --- Step 2: Concurrently process all sub-sitemaps (in HEADLESS mode for speed) ---
+    # --- Step 2: Concurrently process all sub-sitemaps (in HEADLESS mode) ---
     print(f"\n--- Step 2: Processing {len(sub_sitemaps)} sub-sitemaps with {MAX_WORKERS} workers ---")
     
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # Submit subsequent, easier requests in headless mode
-        future_to_url = {executor.submit(fetch_page_with_uc, url, headless_mode=True): url for url in sub_sitemaps}
+        future_to_url = {executor.submit(fetch_and_parse_sitemap, url, headless_mode=True): url for url in sub_sitemaps}
         
         for future in tqdm(as_completed(future_to_url), total=len(sub_sitemaps), desc="Processing Sitemaps"):
             try:
-                sitemap_content = future.result()
-                urls_from_sitemap = parse_urls_from_sitemap_content(sitemap_content)
+                urls_from_sitemap = future.result()
                 if urls_from_sitemap:
                     all_product_urls.update(urls_from_sitemap)
             except Exception as e:
